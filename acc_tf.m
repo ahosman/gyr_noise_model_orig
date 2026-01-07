@@ -1,13 +1,3 @@
-% MATLAB Program for Accelerometer Transfer Function and ASIC Requirements
-
-% This script calculates the transfer function of a 3-axis MEMS capacitive-type accelerometer,
-% including trimming and digital calibration. It also defines the requirements for various parts
-% of the ASIC, including optimal register sizes and resolutions, based on expected variations
-% and limits of parameters from the MEMS sensor.
-
-% Author: Osman, Ahmed Hussein (BST/EIC6)
-% Date: 04.10.2024
-
 function acc_tf(obj)
 
     % Accelerometer Specifications
