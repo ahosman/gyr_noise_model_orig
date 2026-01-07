@@ -67,7 +67,7 @@ classdef gyro_mems
         [cpz_drive_2f, cnz_drive_2f, cpz_drive_2f_power, cnz_drive_2f_power, cpz_drive_2f_delay, cnz_drive_2f_delay] = init_gyro_2f(obj);
         mems = init_gyro(varargin);
         stat = init_gyro_stat(nsim, mc5000File);
-        par  = init_par(parTbl);
+        par  = init_par_mems(parTbl);
         MEMS_tf = sense_tf(obj, plotfig)
     end
 end
