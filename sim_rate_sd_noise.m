@@ -1,6 +1,6 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
-%   sim_rate_sd_noise.m - Rate Channel Sigma-Delta Modulator
+%   sim_rate_sd_noise.m - Rate Channel Sigma-Delta Modulator with LPTV Effects
 %
 %   Simulates the MASH 1-1 sigma-delta modulator architecture for the
 %   rate output. Includes:
@@ -12,6 +12,19 @@
 %
 %   The SD modulator provides second-order noise shaping of quantization
 %   noise while preserving signal integrity through digital cancellation.
+%
+%   LPTV Effects in SD Modulator:
+%     The SD1 feedback DAC switches at drive frequency (f_d ≈ 35 kHz),
+%     creating an LPTV system where drive phase noise modulates the
+%     feedback timing. This causes:
+%       - Multiplicative noise: FB_mod = 1 + γ*[φ_noise + I_noise/I_nom]
+%       - Folding of high-frequency quantization noise into signal band
+%       - Coupling of flicker noise from drive PLL into rate output
+%       - Correlation between phase noise and quantization noise
+%
+%     The input to SD1 includes all sense channel noise (thermal, flicker,
+%     Brownian) which has already been processed through the pseudo-sin
+%     LPTV demodulator with coefficient K_in_noise.
 %
 %   References: noise_model.md Section 5 (Sigma-Delta Modulator)
 %
@@ -111,12 +124,25 @@ function [spectrum_C_rate, spectrum_S_rate, spectrum_Z_rate] = sim_rate_sd_noise
     % 3.1 FIRST-STAGE SD SIMULATION WITH PHASE NOISE MODULATION
     % -----------------------------------------------------------------------
     % Section 5.2.2-5.2.3 in noise_model.md
-    
+    %
+    % LPTV Effects in Sigma-Delta Modulator:
+    % The SD feedback DAC switches at the drive frequency (f_d ≈ 35 kHz),
+    % making it another LPTV component in the system. Drive phase noise
+    % modulates the switching timing, creating a multiplicative noise effect.
+    %
     % The phase noise modulation factor is:
     % FB_mod(t) = 1 + γ × [φ_drive_noise(t) + I_DAC_noise(t)/I_DAC_nom]
     % where γ = 2/N_levels = 2/3 for 3-level SD
     %
-    % This modulation is passed as the last parameter to simulateDSM_mod()
+    % This LPTV effect is critical because it:
+    %   1. Modulates the quantization noise (not just signal)
+    %   2. Folds high-frequency quantization noise into signal band
+    %   3. Couples drive phase noise into rate output
+    %   4. Creates correlation between flicker noise and quantization noise
+    %
+    % The modulation is passed as the last parameter to simulateDSM_mod()
+    % and properly accounts for LPTV coupling of flicker noise through the
+    % SD feedback path.
     
     [sd.C.v1, xn, xmax, sd.C.y1] = simulateDSM_mod(...
         sd.C.u, ...                                    % Input: rate signal + noise

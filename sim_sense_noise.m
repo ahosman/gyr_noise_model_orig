@@ -1,17 +1,31 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %
-%   sim_sense_noise.m - Sense Channel Noise Model
+%   sim_sense_noise.m - Sense Channel Noise Model with LPTV Analysis
 %
 %   Comprehensive noise model for the sense channel of an open-loop
 %   capacitive MEMS gyroscope. Includes three independent axes (C, S, Z)
 %   with the following noise sources:
 %     - Reference voltage noise (Bandgap, IDAC, CM)
 %     - MEMS noise (series resistors, Brownian motion)
-%     - Sense C/V converter (OTA, parallel resistor)
+%     - Sense C/V converter (OTA with thermal + 1/f flicker noise)
 %     - Rate integrator (signal resistors, OTA, finite gain)
 %     - Common-mode voltage coupling (4 distinct paths)
 %     - Drive noise coupling (quadrature compensation)
 %     - Sigma-Delta modulation effects
+%
+%   LPTV (Linear Periodically Time-Varying) System Analysis:
+%     The pseudo-sinusoidal demodulation creates an LPTV system that affects
+%     flicker (1/f) noise propagation through:
+%       1. Frequency translation and aliasing around demodulation harmonics
+%       2. Different noise coefficients (K_in_noise) vs signal (K_in)
+%       3. Effective noise bandwidth determined by periodic switching
+%
+%     Flicker noise is modeled as:
+%       - Input-referred current noise: i(f) = i_1Hz * sqrt(1/f) [A/√Hz]
+%       - Converted to voltage via capacitive impedance: v(f) = i(f)/(2πfC)
+%       - Combined with thermal noise in RMS
+%       - Modulated by pseudo-sin waveform (period = 192 samples)
+%       - Scaled by LPTV noise coefficient K_in_noise ≈ 0.761
 %
 %   References: noise_model.md Sections 3-6 (Sense Channel, CM Coupling,
 %               Sigma-Delta, Pseudo-Sinusoidal Demodulation)
@@ -250,9 +264,22 @@ function [sns_noise, ...
         sense.cv.Z.cin_pair + qc.Z.gyr_cap_qc + sense.cv.Z.gyr_cap_cv_s);
 
     % -----------------------------------------------------------------------
-    % 3.2 SENSE C/V OTA NOISE (Colored)
+    % 3.2 SENSE C/V OTA NOISE (Colored) - LPTV Flicker Noise Analysis
     %     Flicker parameter is input-referred CURRENT noise @1Hz [A/sqrt(Hz)]
     %     Thermal parameter is input-referred VOLTAGE noise floor [V/sqrt(Hz)]
+    %
+    % LPTV (Linear Periodically Time-Varying) System Considerations:
+    % The pseudo-sinusoidal demodulation creates an LPTV system with period
+    % T = 192 samples @ 100kHz = 1.92ms. Flicker noise (1/f) passing through
+    % this LPTV system experiences:
+    %   1. Frequency translation/aliasing around harmonics of f_pseudo (~520Hz)
+    %   2. Different effective bandwidth than DC-coupled noise
+    %   3. Noise coefficient K_in_noise ≠ K_in (signal coefficient)
+    %
+    % The implementation accounts for LPTV effects by:
+    %   a) Generating full colored noise spectrum (thermal + 1/f flicker)
+    %   b) Modulating with pseudo-sin (Section 3.3 below)
+    %   c) Using K_in_noise for noise transfer (different from K_in)
     % -----------------------------------------------------------------------
     f = sense.cv.noise.freq(:).';   % Hz (row)
     fmin_1f = 1;                    % avoid singularity at DC; tune if needed
@@ -269,15 +296,20 @@ function [sns_noise, ...
     vth = obj.imu.as.gyr.stat.mc.v_th;
 
     % 1/f current ASD: i(f) = i1Hz * sqrt(1/f)
+    % This models MOSFET flicker noise as input-referred gate current noise
     i_f = i1Hz .* sqrt(1 ./ fe);  % [A/sqrt(Hz)]
 
     % Convert to equivalent input-referred voltage ASD through capacitive impedance:
     % v_flicker(f) = i(f) / (2*pi*f*Ctot)
+    % The impedance Z = 1/(j*2*pi*f*Ctot) converts current noise to voltage
+    % Note: Ctot includes all capacitances at C/V input (MEMS + parasitic + feedback)
     v_flick_C = i_f ./ (2*pi .* fe .* sns_noise.cv.noise.C.Ctot);
     v_flick_S = i_f ./ (2*pi .* fe .* sns_noise.cv.noise.S.Ctot);
     v_flick_Z = i_f ./ (2*pi .* fe .* sns_noise.cv.noise.Z.Ctot);
 
     % Combine thermal + flicker in RMS (both are input-referred voltage ASD)
+    % Result: frequency-dependent noise with 1/f characteristic at low freq,
+    % transitioning to white thermal floor at flicker corner frequency
     vnd_C = sqrt( (vth.^2) + (v_flick_C.^2) );
     vnd_S = sqrt( (vth.^2) + (v_flick_S.^2) );
     vnd_Z = sqrt( (vth.^2) + (v_flick_Z.^2) );
@@ -309,16 +341,35 @@ function [sns_noise, ...
     sns_noise.cv.noise.cvs_noise_S = sns_noise.cv.noise.cvs_noise_S(:).';
     sns_noise.cv.noise.cvs_noise_Z = sns_noise.cv.noise.cvs_noise_Z(:).';
     % -----------------------------------------------------------------------
-    % 3.3 PSEUDO-SINUSOIDAL MODULATION OF C/V NOISE
+    % 3.3 PSEUDO-SINUSOIDAL MODULATION OF C/V NOISE - LPTV Implementation
     % -----------------------------------------------------------------------
     % Section 6 in noise_model.md
     % OTA noise is modulated by pseudo-sine demodulation waveform
     % This translates noise from baseband to drive frequency
-    
+    %
+    % LPTV Analysis for Flicker Noise:
+    % The pseudo-sinusoidal waveform is a periodic signal with:
+    %   - Period: T = 192 samples (N = 192)
+    %   - Fundamental frequency: f_p = fs/N = 100kHz/192 ≈ 520.8 Hz
+    %   - Levels: {-1.0, -1/2.4, 0, +1/2.4, +1.0}
+    %   - RMS value (noise coefficient): K_in_noise ≈ 0.761
+    %
+    % When colored noise (including 1/f flicker) is multiplied by this
+    % periodic waveform, the LPTV system causes:
+    %   1. Frequency translation: Noise at f_in appears at f_in ± k*f_p
+    %   2. Aliasing: Low-frequency flicker folds into signal band
+    %   3. Spectral shaping: Effective noise BW determined by demodulator
+    %
+    % The modulation is element-wise multiplication in time domain, which
+    % corresponds to convolution in frequency domain with the Fourier series
+    % of the pseudo-sin waveform. This properly captures all LPTV effects
+    % on the flicker noise spectrum.
+
     % Generate pseudo-sinusoidal signal (period = 192 samples)
     pseudo_sin_signal = obj.pseudo_sin(0:obj.ctrl.N-1, 192);
 
-        % Apply pseudo-sin modulation to OTA noise for each axis
+    % Apply pseudo-sin modulation to OTA noise for each axis
+    % The colored noise (thermal + flicker) is modulated by the LPTV waveform
     C_sense.cvout_cvs_ota = (sns_noise.cv.noise.cvs_noise_C * sns_noise.cv.noise.C.cvs_gain) .* ...
         pseudo_sin_signal;
 
@@ -641,9 +692,24 @@ function [sns_noise, ...
     Z_sense.quad_noise_dps = qc.Z.quad_res * drive.noise.pll.noise.phase_noise_drive;
     
     % -----------------------------------------------------------------------
-    % 8.2 RATE INTEGRATOR INPUT NOISE
+    % 8.2 RATE INTEGRATOR INPUT NOISE - LPTV Noise Coefficient Application
     % -----------------------------------------------------------------------
     % Account for demodulation coefficients and gain scaling
+    %
+    % LPTV Noise vs. Signal Coefficients:
+    % The pseudo-sinusoidal demodulation has different coefficients for:
+    %   K_in       ≈ 0.85  : Signal coefficient (coherent integration)
+    %   K_in_noise ≈ 0.761 : Noise coefficient (RMS integration)
+    %
+    % Ratio K_in_noise/K_in ≈ 0.895 represents the "noise bandwidth penalty"
+    % of pseudo-sin vs. ideal sine demodulation. This ratio is critical for
+    % proper scaling of flicker and thermal noise that has been modulated by
+    % the LPTV system. The ratio accounts for:
+    %   - Non-coherent averaging of noise vs. signal
+    %   - Different effective bandwidth for noise
+    %   - RMS weighting vs. correlation weighting
+    %
+    % See noise_model.md Section 6.3 for detailed derivation.
 
     C_sense.ratein_r = C_sense.cvout_r * sense.rate.coeff.Kin_noise / sense.rate.coeff.Kin;
     S_sense.ratein_r = S_sense.cvout_r * sense.rate.coeff.Kin_noise / sense.rate.coeff.Kin;
